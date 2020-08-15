@@ -31,6 +31,9 @@ const players = new Map(); // Player manager
  * @see players
  */
 class Player {
+	x = 0;
+	y = 0;
+	
 	/**
 	 * @ param {peerjs.DataConnection} connection - The DataConnection of the client.
 	 */
@@ -53,6 +56,7 @@ class Player {
 			players.set(this.id, this);
 			updateList();
 		});
+		connection.on("data", data => this.onUpdate(data));
 	}
 	
 	/**
@@ -62,6 +66,41 @@ class Player {
 	close() {
 		this._c.close();
 		players.delete(this.id);
+	}
+	
+	/**
+	 * Handles incoming events from the wrapped client.
+	 */
+	onUpdate(data) {
+		// Verify for GDevelop event
+		if(data.eventName === undefined) return;
+		if(data.eventName === "update") {
+			if(data.data === undefined) return;
+			this.x = data.data.x || 0;
+			this.y = data.data.y || 0;
+			this.updateClient();
+			updateList();
+		}
+	}
+	
+	/**
+	 * Send the wrapped client the current state of the other players.
+	 * This should only be done when requested by the game for server performance reasons.
+	 */
+	updateClient() {
+		let payload = [];
+		for(let [key, player] of players) {
+			if(key === this.id) continue;
+			payload.push({
+				x: player.x,
+				y: player.y,
+				name: key,
+			});
+		}
+		this._c.send({
+			eventName: "update",
+			data: payload,
+		});
 	}
 }
 
@@ -86,21 +125,42 @@ let p = new Peer();
 let c;
 document.getElementById("connect").addEventListener("click", () => {
 	c = p.connect(peer.id);
+	c.on("data", console.log);
 });
 
 document.getElementById("disconnect").addEventListener("click", () => {
 	c.close();
 });
 
+const posXi = document.getElementById("posX");
+const posYi = document.getElementById("posY");
+document.getElementById("update").addEventListener("click", () => {
+	c.send({
+		eventName: "update",
+		data: {
+			x: posXi.value,
+			y: posYi.value,
+		},
+	});
+});
+	
 // Server UI
 const list = document.getElementById("list");
 function updateList() {
 	while (list.lastElementChild) {
 		list.removeChild(list.lastElementChild);
 	}
-	for(let c of players.keys()) {
+	for(let [c, player] of players) {
 		const li = document.createElement("li");
-		li.innerText = c;
 		list.appendChild(li);
+		const id = document.createElement("h5");
+		id.innerText = c;
+		li.appendChild(id);
+		const posX = document.createElement("h6");
+		posX.innerText = "X: " + player.x;
+		li.appendChild(posX);
+		const posY= document.createElement("h6");
+		posY.innerText = "Y: " + player.y;
+		li.appendChild(posY);
 	}
 }
