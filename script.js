@@ -9,6 +9,18 @@ function log(message) {
 }
 
 /**
+ * A helper function to not have to write the try catch everytime.
+ * @param {string} json 
+ */
+function parseJSON(json) {
+	try {
+		return JSON.parse(json);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
  * A map containing all wrapped connections 
  * to individual players.
  * 
@@ -33,21 +45,22 @@ const players = new Map(); // Player manager
 class Player {
 	x = 0;
 	y = 0;
+	animation = 0;
+	flip = 0;
 	
 	/**
-	 * @ param {peerjs.DataConnection} connection - The DataConnection of the client.
+	 * @param {peerjs.DataConnection} connection - The DataConnection of the client.
 	 */
 	constructor(connection) {
 		this._c = connection;
 		this.id = connection.peer;
 		if(players.has(this.id)) players.get(this.id).close();
 		connection.on("close", () => {
-			if(players.get(this.id) === this) players.delete(this.id);
+			this.close();
 			log("Disconnected: " + this.id);
-			updateList();
 		});
 		connection.on("error", error => {
-			this._c.close();
+			this.close();
 			players.delete(this.id);
 			log("An Error occured while communicating with " + this.id + ", connection closed. " + error);
 		});
@@ -56,7 +69,35 @@ class Player {
 			players.set(this.id, this);
 			updateList();
 		});
-		connection.on("data", data => this.onUpdate(data));
+		connection.on("data", e => this.onUpdate(e));
+
+		// Regularly check for disconnection as the built in way is not reliable.
+		const player = this;
+		let disconnectChecker = function () {
+			if (
+				player._c.peerConnection.connectionState === 'failed' ||
+				player._c.peerConnection.connectionState === 'disconnected'
+			) {
+				player.close();
+			} else {
+				setTimeout(disconnectChecker, 500);
+			}
+		};
+		disconnectChecker();
+	}
+
+	_sendEventToAll(name, payload, skipStringify) {
+		for(let [key, player] of players) {
+			if(key === this.id) continue;
+			player.send(name, payload, skipStringify);
+		}
+	}
+
+	send(name, payload, skipStringify) {
+		this._c.send({
+			eventName: name,
+			data: skipStringify ? payload : JSON.stringify(payload),
+		});
 	}
 	
 	/**
@@ -65,21 +106,28 @@ class Player {
 	 */
 	close() {
 		this._c.close();
-		players.delete(this.id);
+		if(players.get(this.id) === this) players.delete(this.id);
+		updateList();
+		setTimeout(() => this._sendEventToAll("disconnected", this.id, true), 500);
 	}
 	
 	/**
 	 * Handles incoming events from the wrapped client.
 	 */
-	onUpdate(data) {
+	onUpdate(e) {
 		// Verify for GDevelop event
-		if(data.eventName === undefined) return;
-		if(data.eventName === "update") {
-			if(data.data === undefined) return;
-			this.x = data.data.x || 0;
-			this.y = data.data.y || 0;
+		if(e === undefined || e.eventName === undefined) return;
+		const data = JSON.parse(e.data);
+		if(e.eventName === "update") {
+			if(data === undefined) return;
+			this.x = data.x || 0;
+			this.y = data.y || 0;
+			this.animation = data.animation || 0;
 			this.updateClient();
 			updateList();
+		}
+		if(e.eventName === "flip") {
+			this.flip = data;
 		}
 	}
 	
@@ -94,18 +142,17 @@ class Player {
 			payload.push({
 				x: player.x,
 				y: player.y,
+				animation: player.animation,
+				flip: player.flip,
 				name: key,
 			});
 		}
-		this._c.send({
-			eventName: "update",
-			data: payload,
-		});
+		this.send("update", payload);
 	}
 }
 
 /** The main Peer JS instance */
-const peer = new Peer({debug: 2});
+const peer = new Peer("ServerIDGDEVELOP555", {debug: 2});
 
 peer.on("open", () => log("Server Connected to P2P network."));
 
@@ -119,31 +166,6 @@ peer.on("connection", connection => {
 	new Player(connection);
 });
 
-
-// Client (for tests)
-let p = new Peer();
-let c;
-document.getElementById("connect").addEventListener("click", () => {
-	c = p.connect(peer.id);
-	c.on("data", console.log);
-});
-
-document.getElementById("disconnect").addEventListener("click", () => {
-	c.close();
-});
-
-const posXi = document.getElementById("posX");
-const posYi = document.getElementById("posY");
-document.getElementById("update").addEventListener("click", () => {
-	c.send({
-		eventName: "update",
-		data: {
-			x: posXi.value,
-			y: posYi.value,
-		},
-	});
-});
-	
 // Server UI
 const list = document.getElementById("list");
 function updateList() {
@@ -164,3 +186,28 @@ function updateList() {
 		li.appendChild(posY);
 	}
 }
+
+
+// Client (for tests)
+let p = new Peer();
+let c;
+document.getElementById("connect").addEventListener("click", () => {
+	c = p.connect(peer.id);
+	// c.on("data", console.log);
+});
+
+document.getElementById("disconnect").addEventListener("click", () => {
+	c.close();
+});
+
+const posXi = document.getElementById("posX");
+const posYi = document.getElementById("posY");
+document.getElementById("update").addEventListener("click", () => {
+	c.send({
+		eventName: "update",
+		data: JSON.stringify({
+			x: posXi.value,
+			y: posYi.value,
+		}),
+	});
+});
